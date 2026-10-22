@@ -503,6 +503,35 @@ func TestPrepareEnvironment(t *testing.T) {
 	}
 }
 
+func TestPrepareEnvironment_Admin_Incomplete(t *testing.T) {
+	tempDir := t.TempDir()
+
+	writeSecret := func(name, content string) {
+		p := filepath.Join(tempDir, name)
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatalf("writing secret %s: %v", name, err)
+		}
+	}
+
+	writeSecret("db_name", "test_db")
+	writeSecret("db_user", "test_user")
+	writeSecret("db_password", "test_pass")
+
+	writeSecret("sftpgo_admin_user", "admin_account")
+	if _, err := PrepareEnvironment(nil, tempDir); err == nil {
+		t.Fatal("expected error when only sftpgo_admin_user is provided, got nil")
+	}
+
+	if err := os.Remove(filepath.Join(tempDir, "sftpgo_admin_user")); err != nil {
+		t.Fatalf("removing sftpgo_admin_user: %v", err)
+	}
+
+	writeSecret("sftpgo_admin_password", "admin_pass")
+	if _, err := PrepareEnvironment(nil, tempDir); err == nil {
+		t.Fatal("expected error when only sftpgo_admin_password is provided, got nil")
+	}
+}
+
 func TestPrepareEnvironment_OIDC_Complete(t *testing.T) {
 	tempDir := t.TempDir()
 
@@ -527,6 +556,7 @@ func TestPrepareEnvironment_OIDC_Complete(t *testing.T) {
 	}
 
 	expectedItems := []string{
+		"SFTPGO_DATA_PROVIDER__CREATE_DEFAULT_ADMIN=false",
 		"SFTPGO_HTTPD__BINDINGS__0__OIDC__CONFIG_URL=https://auth.example.com/application/o/sftpgo/",
 		"SFTPGO_HTTPD__BINDINGS__0__OIDC__CLIENT_ID=sftpgo_client_app",
 		"SFTPGO_HTTPD__BINDINGS__0__OIDC__CLIENT_SECRET=sftpgo_client_secret_data",

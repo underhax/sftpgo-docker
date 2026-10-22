@@ -157,9 +157,9 @@ pwgen -s 64 1 | tr -d '\n' | sudo tee /home/sftpgo/secrets/sftpgo_kms_master_key
 
 **Optional: SSH host private key (for SFTP service):**
 
-> **Note:** SFTP is disabled by default (`SFTP_PORT=0`), eliminating unneeded host key requirements. If you want to enable the SFTP service:
+> **Note:** SFTP is disabled by default (`SFTPGO_SFTPD__BINDINGS__0__PORT=0`), eliminating unneeded host key requirements. If you want to enable the SFTP service:
 > 1. Generate an Ed25519 host key using the command below.
-> 2. In `/home/sftpgo/.env`, set `SFTP_PORT=2022`, define `HOST_IP` with your host's external/public IP address, and choose a random unassigned high port for `SFTP_HOST_PORT` (avoid standard or predictable ports like 22 or 2022).
+> 2. In `/home/sftpgo/.env`, set `SFTPGO_SFTPD__BINDINGS__0__PORT=2022`, define `HOST_IP` with your host's external/public IP address, and choose a random unassigned high port for `SFTP_HOST_PORT` (avoid standard or predictable ports like 22 or 2022).
 > 3. In `docker-compose.yaml`, uncomment the SFTP port mapping and the `ssh_host_ed25519_key` secret (under both `services.sftpgo.secrets` and the root `secrets:` block).
 
 ```bash

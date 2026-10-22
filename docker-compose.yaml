@@ -74,11 +74,9 @@ services:
     mem_reservation: 256m
     env_file:
       - .env
-    environment:
-      SFTPGO_SFTPD__BINDINGS__0__PORT: "${SFTP_PORT:-0}"
     ports:
       - "${HOST_BIND_IP:-127.0.0.1}:${HOST_PORT:-54480}:8081"
-      # - "${HOST_IP}:${SFTP_HOST_PORT}:${SFTP_PORT}"
+      # - "${HOST_IP}:${SFTP_HOST_PORT}:${SFTPGO_SFTPD__BINDINGS__0__PORT}"
     tmpfs:
       - /tmp:mode=1777,noexec,nosuid,nodev,size=64m
       - /run:mode=1777,noexec,nosuid,nodev,size=16m

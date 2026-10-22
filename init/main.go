@@ -78,7 +78,7 @@ const (
 	defaultWebDAVPort      = "8090"
 	defaultUsersBaseDir    = "/data"
 	defaultBackupsPath     = "/tmp"
-	defaultCreateAdmin     = "true"
+	defaultCreateAdmin     = "false"
 	defaultTemplatesPath   = "/usr/share/sftpgo/templates"
 	defaultStaticFilesPath = "/usr/share/sftpgo/static"
 	defaultOpenAPIPath     = "/usr/share/sftpgo/openapi"
@@ -261,16 +261,25 @@ func configureAdminSecrets(env []string, secretsDir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if adminUserExists && adminUser != "" {
-		env = setEnvVar(env, envAdminUser, adminUser)
-	}
 
 	adminPass, adminPassExists, err := readOptionalSecret(filepath.Join(secretsDir, "sftpgo_admin_password"))
 	if err != nil {
 		return nil, err
 	}
-	if adminPassExists && adminPass != "" {
+
+	hasUser := adminUserExists && adminUser != ""
+	hasPass := adminPassExists && adminPass != ""
+
+	if hasUser != hasPass {
+		return nil, errors.New("incomplete admin configuration: both sftpgo_admin_user and sftpgo_admin_password are required to create default admin")
+	}
+
+	if hasUser && hasPass {
+		env = setEnvVar(env, envAdminUser, adminUser)
 		env = setEnvVar(env, envAdminAuth, adminPass)
+		env = setEnvVar(env, envDataDefaultAdmin, "true")
+	} else {
+		env = setEnvVarIfMissing(env, envDataDefaultAdmin, defaultCreateAdmin)
 	}
 
 	kmsKey, kmsKeyExists, err := readOptionalSecret(filepath.Join(secretsDir, fileKMSMaster))
@@ -372,7 +381,7 @@ func configureDefaultSettings(env []string) []string {
 	env = setEnvVarIfMissing(env, envWebDAVPort, defaultWebDAVPort)
 	env = setEnvVar(env, envDataUsersBaseDir, defaultUsersBaseDir)
 	env = setEnvVar(env, envDataBackupsPath, defaultBackupsPath)
-	env = setEnvVar(env, envDataDefaultAdmin, defaultCreateAdmin)
+	env = setEnvVarIfMissing(env, envDataDefaultAdmin, defaultCreateAdmin)
 	env = setEnvVar(env, envHTTPTemplatesPath, defaultTemplatesPath)
 	env = setEnvVar(env, envHTTPStaticPath, defaultStaticFilesPath)
 	env = setEnvVar(env, envHTTPOpenAPIPath, defaultOpenAPIPath)
