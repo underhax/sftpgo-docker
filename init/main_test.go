@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"testing"
 )
 
@@ -315,65 +316,277 @@ func TestSetEnvVarIfMissing(t *testing.T) {
 	}
 }
 
-func TestDiscoverSSHHostKeys(t *testing.T) {
+func writeTestSecret(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatalf("writing secret %s: %v", name, err)
+	}
+	return p
+}
+
+func TestLookupEnvVar(t *testing.T) {
+	tests := []struct {
+		name     string
+		key      string
+		expected string
+		env      []string
+	}{
+		{
+			name:     "present",
+			key:      "OMEGA",
+			expected: "last",
+			env:      []string{"SIGMA=first", "OMEGA=last"},
+		},
+		{
+			name:     "missing",
+			key:      "KAPPA",
+			expected: "",
+			env:      []string{"SIGMA=first"},
+		},
+		{
+			name:     "prefix_collision",
+			key:      "THETA",
+			expected: "",
+			env:      []string{"THETA_EXTRA=value"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := lookupEnvVar(tt.env, tt.key); got != tt.expected {
+				t.Fatalf("expected %q, got %q", tt.expected, got)
+			}
+		})
+	}
+}
+
+func TestListSecretNames(t *testing.T) {
 	tempDir := t.TempDir()
 
-	subDir := filepath.Join(tempDir, "ssh_host_ignored_dir_key")
-	if err := os.Mkdir(subDir, 0o700); err != nil {
+	if err := os.Mkdir(filepath.Join(tempDir, "nested_dir"), 0o700); err != nil {
 		t.Fatalf("creating subdir: %v", err)
 	}
+	writeTestSecret(t, tempDir, "sftpgo_smtp__user", "noreply@example.com")
+	writeTestSecret(t, tempDir, "db_user", "test_user")
+	writeTestSecret(t, tempDir, "ssh_host_rsa_key", "rsa_content")
 
-	rsaKey := filepath.Join(tempDir, "ssh_host_rsa_key")
-	if err := os.WriteFile(rsaKey, []byte("rsa_content"), 0o600); err != nil {
-		t.Fatalf("writing rsa key: %v", err)
-	}
-
-	ed25519Key := filepath.Join(tempDir, "ssh_host_ed25519_key")
-	if err := os.WriteFile(ed25519Key, []byte("ed25519_content"), 0o600); err != nil {
-		t.Fatalf("writing ed25519 key: %v", err)
-	}
-
-	emptyKey := filepath.Join(tempDir, "ssh_host_empty_key")
-	if err := os.WriteFile(emptyKey, []byte("  \n"), 0o600); err != nil {
-		t.Fatalf("writing empty key: %v", err)
-	}
-
-	unrelated := filepath.Join(tempDir, "other_secret.txt")
-	if err := os.WriteFile(unrelated, []byte("other"), 0o600); err != nil {
-		t.Fatalf("writing unrelated: %v", err)
-	}
-
-	keys, err := discoverSSHHostKeys(tempDir)
+	names, err := listSecretNames(tempDir)
 	if err != nil {
-		t.Fatalf("unexpected error discovering keys: %v", err)
+		t.Fatalf("unexpected error listing secrets: %v", err)
+	}
+	expected := []string{"db_user", "sftpgo_smtp__user", "ssh_host_rsa_key"}
+	if !slices.Equal(names, expected) {
+		t.Fatalf("expected %v, got %v", expected, names)
 	}
 
-	if len(keys) != 2 {
-		t.Fatalf("expected 2 discovered keys, got %d", len(keys))
-	}
-	if keys[0] != ed25519Key || keys[1] != rsaKey {
-		t.Fatalf("expected sorted keys [%s, %s], got %v", ed25519Key, rsaKey, keys)
-	}
-
-	keys, err = discoverSSHHostKeys(filepath.Join(tempDir, "non_existent"))
-	if err != nil || len(keys) != 0 {
-		t.Fatalf("expected empty slice without error on non-existent dir, got keys=%v err=%v", keys, err)
+	names, err = listSecretNames(filepath.Join(tempDir, "non_existent"))
+	if err != nil || names != nil {
+		t.Fatalf("expected nil without error on non-existent dir, got names=%v err=%v", names, err)
 	}
 
 	origReadDir := readDir
 	readDir = mockFailingReadDir
 	t.Cleanup(func() { readDir = origReadDir })
 
-	if _, err := discoverSSHHostKeys(tempDir); err == nil {
+	if _, err := listSecretNames(tempDir); err == nil {
 		t.Fatal("expected mock readdir error, got nil")
 	}
+}
 
-	readDir = origReadDir
+func TestHasSFTPGoSecretPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{name: "lowercase", input: "sftpgo_smtp__host", expected: true},
+		{name: "uppercase", input: "SFTPGO_SMTP__PORT", expected: true},
+		{name: "mixed_case", input: "Sftpgo_smtp__from", expected: true},
+		{name: "prefix_only", input: "sftpgo_", expected: true},
+		{name: "missing_separator", input: "sftpgo", expected: false},
+		{name: "database_secret", input: "db_password", expected: false},
+		{name: "ssh_host_key", input: "ssh_host_ecdsa_key", expected: false},
+		{name: "empty", input: "", expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasSFTPGoSecretPrefix(tt.input); got != tt.expected {
+				t.Fatalf("expected %v for %q, got %v", tt.expected, tt.input, got)
+			}
+		})
+	}
+}
+
+func TestSecretEnvKey(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+		wantErr  bool
+	}{
+		{name: "nested_lowercase", input: "sftpgo_smtp__password", expected: "SFTPGO_SMTP__PASSWORD"},
+		{name: "already_uppercase", input: "SFTPGO_SMTP__AUTH_TYPE", expected: "SFTPGO_SMTP__AUTH_TYPE"},
+		{name: "indexed_binding", input: "sftpgo_httpd__bindings__0__oidc__client_id", expected: "SFTPGO_HTTPD__BINDINGS__0__OIDC__CLIENT_ID"},
+		{name: "prefix_only", input: "sftpgo_", wantErr: true},
+		{name: "hyphen", input: "sftpgo_smtp-encryption", wantErr: true},
+		{name: "dot", input: "sftpgo_smtp.domain", wantErr: true},
+		{name: "equals_sign", input: "sftpgo_smtp__debug=1", wantErr: true},
+		{name: "whitespace", input: "sftpgo_smtp templates", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := secretEnvKey(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("wantErr=%v, got err=%v", tt.wantErr, err)
+			}
+			if got != tt.expected {
+				t.Fatalf("expected %q, got %q", tt.expected, got)
+			}
+		})
+	}
+}
+
+func TestConfigureSFTPGoSecrets(t *testing.T) {
+	tempDir := t.TempDir()
+
+	writeTestSecret(t, tempDir, "sftpgo_smtp__password", "  smtp_pass\r\n")
+	writeTestSecret(t, tempDir, "sftpgo_smtp__user", "noreply@example.com")
+	writeTestSecret(t, tempDir, "SFTPGO_SMTP__HOST", "mail.example.net")
+	writeTestSecret(t, tempDir, "sftpgo_kms__secrets__master_key", "kms_secret")
+	writeTestSecret(t, tempDir, "sftpgo_httpd__bindings__0__oidc__client_secret", "oidc_secret")
+	writeTestSecret(t, tempDir, "sftpgo_smtp__domain", "  \n")
+	writeTestSecret(t, tempDir, "db_password", "db_pass")
+
+	names, err := listSecretNames(tempDir)
+	if err != nil {
+		t.Fatalf("listing secrets: %v", err)
+	}
+	names = append(names, "sftpgo_listed_but_missing")
+
+	baseEnv := []string{"SFTPGO_SMTP__USER=stale@example.org"}
+	env, err := configureSFTPGoSecrets(baseEnv, tempDir, names)
+	if err != nil {
+		t.Fatalf("unexpected error configuring secrets: %v", err)
+	}
+
+	expectedItems := []string{
+		"SFTPGO_SMTP__PASSWORD=smtp_pass",
+		"SFTPGO_SMTP__USER=noreply@example.com",
+		"SFTPGO_SMTP__HOST=mail.example.net",
+		"SFTPGO_KMS__SECRETS__MASTER_KEY=kms_secret",
+		"SFTPGO_HTTPD__BINDINGS__0__OIDC__CLIENT_SECRET=oidc_secret",
+	}
+	for _, item := range expectedItems {
+		if !slices.Contains(env, item) {
+			t.Fatalf("missing expected env item %q in %v", item, env)
+		}
+	}
+	if len(env) != len(expectedItems) {
+		t.Fatalf("expected exactly %d env items, got %d: %v", len(expectedItems), len(env), env)
+	}
+
+	if _, err := configureSFTPGoSecrets(nil, tempDir, []string{"sftpgo_smtp-port"}); err == nil {
+		t.Fatal("expected error for unmappable secret name, got nil")
+	}
+
 	origReadFile := readFile
 	readFile = mockFailingReadFile
 	t.Cleanup(func() { readFile = origReadFile })
 
-	if _, err := discoverSSHHostKeys(tempDir); err == nil {
+	if _, err := configureSFTPGoSecrets(nil, tempDir, names); err == nil {
+		t.Fatal("expected mock readfile error, got nil")
+	}
+}
+
+func TestConfigureDefaultAdmin(t *testing.T) {
+	tests := []struct {
+		env  map[string]string
+		name string
+		want bool
+	}{
+		{
+			name: "complete_credentials",
+			env:  map[string]string{envAdminUser: "admin_alpha", envAdminAuth: "pass_alpha"},
+			want: true,
+		},
+		{
+			name: "username_only",
+			env:  map[string]string{envAdminUser: "admin_beta"},
+			want: false,
+		},
+		{
+			name: "password_only",
+			env:  map[string]string{envAdminAuth: "pass_gamma"},
+			want: false,
+		},
+		{
+			name: "empty_username",
+			env:  map[string]string{envAdminUser: "", envAdminAuth: "pass_delta"},
+			want: false,
+		},
+		{
+			name: "explicit_value_preserved",
+			env:  map[string]string{envDataDefaultAdmin: "true"},
+			want: true,
+		},
+		{
+			name: "no_credentials",
+			env:  nil,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := make([]string, 0, len(tt.env))
+			for k, v := range tt.env {
+				env = append(env, k+"="+v)
+			}
+			got := lookupEnvVar(configureDefaultAdmin(env), envDataDefaultAdmin)
+			if got != strconv.FormatBool(tt.want) {
+				t.Fatalf("expected %s=%t, got %q", envDataDefaultAdmin, tt.want, got)
+			}
+		})
+	}
+}
+
+func TestDiscoverSSHHostKeys(t *testing.T) {
+	tempDir := t.TempDir()
+
+	rsaKey := writeTestSecret(t, tempDir, "ssh_host_rsa_key", "rsa_content")
+	ed25519Key := writeTestSecret(t, tempDir, "ssh_host_ed25519_key", "ed25519_content")
+	writeTestSecret(t, tempDir, "ssh_host_empty_key", "  \n")
+	writeTestSecret(t, tempDir, "other_secret.txt", "other")
+
+	names := []string{
+		"other_secret.txt",
+		"ssh_host_ed25519_key",
+		"ssh_host_empty_key",
+		"ssh_host_missing_key",
+		"ssh_host_rsa_key",
+	}
+
+	keys, err := discoverSSHHostKeys(tempDir, names)
+	if err != nil {
+		t.Fatalf("unexpected error discovering keys: %v", err)
+	}
+	if !slices.Equal(keys, []string{ed25519Key, rsaKey}) {
+		t.Fatalf("expected keys [%s, %s], got %v", ed25519Key, rsaKey, keys)
+	}
+
+	keys, err = discoverSSHHostKeys(tempDir, nil)
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("expected empty result without names, got keys=%v err=%v", keys, err)
+	}
+
+	origReadFile := readFile
+	readFile = mockFailingReadFile
+	t.Cleanup(func() { readFile = origReadFile })
+
+	if _, err := discoverSSHHostKeys(tempDir, names); err == nil {
 		t.Fatal("expected mock readfile error, got nil")
 	}
 }
@@ -404,9 +617,10 @@ func TestPrepareEnvironment(t *testing.T) {
 	}
 
 	writeSecret("db_password", "test_pass")
-	writeSecret("sftpgo_admin_user", "admin_account")
-	writeSecret("sftpgo_admin_password", "admin_pass")
-	writeSecret("sftpgo_kms_master_key", "kms_secret")
+	writeSecret("sftpgo_default_admin_username", "admin_account")
+	writeSecret("sftpgo_default_admin_password", "admin_pass")
+	writeSecret("sftpgo_kms__secrets__master_key", "kms_secret")
+	writeSecret("sftpgo_smtp__password", "smtp_pass")
 	writeSecret("ssh_host_ed25519_key", "ed25519_key_data")
 
 	baseEnv := []string{
@@ -425,8 +639,6 @@ func TestPrepareEnvironment(t *testing.T) {
 		"SFTPGO_LOG_FILE_PATH=/var/log/sftpgo/sftpgo.log",
 		"SFTPGO_TELEMETRY__BIND_ADDRESS=127.0.0.1",
 		"SFTPGO_TELEMETRY__BIND_PORT=10000",
-		"SFTPGO_HTTPD__BINDINGS__0__PORT=8080",
-		"SFTPGO_WEBDAVD__BINDINGS__0__PORT=8090",
 		"SFTPGO_DATA_PROVIDER__DRIVER=postgresql",
 		"SFTPGO_DATA_PROVIDER__HOST=/var/run/postgresql",
 		"SFTPGO_DATA_PROVIDER__PORT=5432",
@@ -440,12 +652,10 @@ func TestPrepareEnvironment(t *testing.T) {
 		"SFTPGO_HTTPD__TEMPLATES_PATH=/usr/share/sftpgo/templates",
 		"SFTPGO_HTTPD__STATIC_FILES_PATH=/usr/share/sftpgo/static",
 		"SFTPGO_HTTPD__OPENAPI_PATH=/usr/share/sftpgo/openapi",
-		"SFTPGO_COMMON__IDLE_TIMEOUT=15",
-		"SFTPGO_COMMON__UPLOAD_MODE=0",
 		"SFTPGO_DEFAULT_ADMIN_USERNAME=admin_account",
 		"SFTPGO_DEFAULT_ADMIN_PASSWORD=admin_pass",
 		"SFTPGO_KMS__SECRETS__MASTER_KEY=kms_secret",
-		"SFTPGO_HOOK__ENABLE_OIDC_UI=1",
+		"SFTPGO_SMTP__PASSWORD=smtp_pass",
 		"SFTPGO_SFTPD__HOST_KEYS__0=" + filepath.Join(tempDir, "ssh_host_ed25519_key"),
 	}
 
@@ -456,10 +666,8 @@ func TestPrepareEnvironment(t *testing.T) {
 	}
 
 	overrideEnv := []string{
-		"SFTPGO_HTTPD__BINDINGS__0__PORT=0",
-		"SFTPGO_WEBDAVD__BINDINGS__0__PORT=0",
-		"SFTPGO_COMMON__IDLE_TIMEOUT=30",
-		"SFTPGO_COMMON__UPLOAD_MODE=2",
+		"SFTPGO_HTTPD__BINDINGS__0__PORT=9000",
+		"SFTPGO_WEBDAVD__BINDINGS__0__PORT=9001",
 	}
 	customEnv, err := PrepareEnvironment(overrideEnv, tempDir)
 	if err != nil {
@@ -478,19 +686,11 @@ func TestPrepareEnvironment(t *testing.T) {
 		mockTargetSecretPath = ""
 	})
 
-	mockTargetSecretPath = filepath.Join(tempDir, "sftpgo_admin_user")
-	if _, err := PrepareEnvironment(nil, tempDir); err == nil {
-		t.Fatal("expected error reading sftpgo_admin_user, got nil")
-	}
-
-	mockTargetSecretPath = filepath.Join(tempDir, "sftpgo_admin_password")
-	if _, err := PrepareEnvironment(nil, tempDir); err == nil {
-		t.Fatal("expected error reading sftpgo_admin_password, got nil")
-	}
-
-	mockTargetSecretPath = filepath.Join(tempDir, "sftpgo_kms_master_key")
-	if _, err := PrepareEnvironment(nil, tempDir); err == nil {
-		t.Fatal("expected error reading sftpgo_kms_master_key, got nil")
+	for _, fname := range []string{"sftpgo_default_admin_username", "ssh_host_ed25519_key"} {
+		mockTargetSecretPath = filepath.Join(tempDir, fname)
+		if _, err := PrepareEnvironment(nil, tempDir); err == nil {
+			t.Fatalf("expected error reading %s, got nil", fname)
+		}
 	}
 
 	readFile = origReadFile
@@ -499,130 +699,53 @@ func TestPrepareEnvironment(t *testing.T) {
 	t.Cleanup(func() { readDir = origReadDir })
 
 	if _, err := PrepareEnvironment(nil, tempDir); err == nil {
-		t.Fatal("expected error discovering ssh keys, got nil")
+		t.Fatal("expected error listing secrets directory, got nil")
 	}
 }
 
-func TestPrepareEnvironment_Admin_Incomplete(t *testing.T) {
+func TestPrepareEnvironment_EnforcedSettingsOverrideSecrets(t *testing.T) {
 	tempDir := t.TempDir()
 
-	writeSecret := func(name, content string) {
-		p := filepath.Join(tempDir, name)
-		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
-			t.Fatalf("writing secret %s: %v", name, err)
-		}
-	}
-
-	writeSecret("db_name", "test_db")
-	writeSecret("db_user", "test_user")
-	writeSecret("db_password", "test_pass")
-
-	writeSecret("sftpgo_admin_user", "admin_account")
-	if _, err := PrepareEnvironment(nil, tempDir); err == nil {
-		t.Fatal("expected error when only sftpgo_admin_user is provided, got nil")
-	}
-
-	if err := os.Remove(filepath.Join(tempDir, "sftpgo_admin_user")); err != nil {
-		t.Fatalf("removing sftpgo_admin_user: %v", err)
-	}
-
-	writeSecret("sftpgo_admin_password", "admin_pass")
-	if _, err := PrepareEnvironment(nil, tempDir); err == nil {
-		t.Fatal("expected error when only sftpgo_admin_password is provided, got nil")
-	}
-}
-
-func TestPrepareEnvironment_OIDC_Complete(t *testing.T) {
-	tempDir := t.TempDir()
-
-	writeSecret := func(name, content string) {
-		p := filepath.Join(tempDir, name)
-		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
-			t.Fatalf("writing secret %s: %v", name, err)
-		}
-	}
-
-	writeSecret("db_name", "test_db")
-	writeSecret("db_user", "test_user")
-	writeSecret("db_password", "test_pass")
-	writeSecret("sftpgo_oidc_config_url", "https://auth.example.com/application/o/sftpgo/")
-	writeSecret("sftpgo_oidc_client_id", "sftpgo_client_app")
-	writeSecret("sftpgo_oidc_client_secret", "sftpgo_client_secret_data")
-	writeSecret("sftpgo_oidc_redirect_url", "https://sftp.example.com")
+	writeTestSecret(t, tempDir, "db_name", "test_db")
+	writeTestSecret(t, tempDir, "db_user", "test_user")
+	writeTestSecret(t, tempDir, "db_password", "trusted_db_pass")
+	writeTestSecret(t, tempDir, "sftpgo_data_provider__password", "hostile_override")
+	writeTestSecret(t, tempDir, "sftpgo_data_provider__users_base_dir", "/hostile")
+	writeTestSecret(t, tempDir, "sftpgo_log_file_path", "/hostile.log")
 
 	env, err := PrepareEnvironment(nil, tempDir)
 	if err != nil {
-		t.Fatalf("unexpected error preparing oidc environment: %v", err)
+		t.Fatalf("unexpected error preparing environment: %v", err)
 	}
 
-	expectedItems := []string{
-		"SFTPGO_DATA_PROVIDER__CREATE_DEFAULT_ADMIN=false",
-		"SFTPGO_HTTPD__BINDINGS__0__OIDC__CONFIG_URL=https://auth.example.com/application/o/sftpgo/",
-		"SFTPGO_HTTPD__BINDINGS__0__OIDC__CLIENT_ID=sftpgo_client_app",
-		"SFTPGO_HTTPD__BINDINGS__0__OIDC__CLIENT_SECRET=sftpgo_client_secret_data",
-		"SFTPGO_HTTPD__BINDINGS__0__OIDC__REDIRECT_BASE_URL=https://sftp.example.com",
+	tests := []struct {
+		key  string
+		want string
+	}{
+		{key: envDataProviderAuth, want: "trusted_db_pass"},
+		{key: envDataUsersBaseDir, want: defaultUsersBaseDir},
+		{key: envLogFilePath, want: defaultLogPath},
 	}
 
-	for _, item := range expectedItems {
-		if !slices.Contains(env, item) {
-			t.Fatalf("missing expected oidc env item %q in %v", item, env)
-		}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			if got := lookupEnvVar(env, tt.key); got != tt.want {
+				t.Fatalf("expected %s=%q, got %q", tt.key, tt.want, got)
+			}
+		})
 	}
 }
 
-func TestPrepareEnvironment_OIDC_Incomplete(t *testing.T) {
+func TestPrepareEnvironment_InvalidSecretName(t *testing.T) {
 	tempDir := t.TempDir()
 
-	writeSecret := func(name, content string) {
-		p := filepath.Join(tempDir, name)
-		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
-			t.Fatalf("writing secret %s: %v", name, err)
-		}
-	}
-
-	writeSecret("db_name", "test_db")
-	writeSecret("db_user", "test_user")
-	writeSecret("db_password", "test_pass")
-	writeSecret("sftpgo_oidc_client_id", "sftpgo_client_app")
+	writeTestSecret(t, tempDir, "db_name", "test_db")
+	writeTestSecret(t, tempDir, "db_user", "test_user")
+	writeTestSecret(t, tempDir, "db_password", "test_pass")
+	writeTestSecret(t, tempDir, "sftpgo_smtp-from", "noreply@example.com")
 
 	if _, err := PrepareEnvironment(nil, tempDir); err == nil {
-		t.Fatal("expected error with incomplete oidc configuration, got nil")
-	}
-}
-
-func TestPrepareEnvironment_OIDC_ReadErrors(t *testing.T) {
-	tempDir := t.TempDir()
-
-	writeSecret := func(name, content string) {
-		p := filepath.Join(tempDir, name)
-		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
-			t.Fatalf("writing secret %s: %v", name, err)
-		}
-	}
-
-	writeSecret("db_name", "test_db")
-	writeSecret("db_user", "test_user")
-	writeSecret("db_password", "test_pass")
-
-	origReadFile := readFile
-	readFile = mockConditionalReadFile
-	t.Cleanup(func() {
-		readFile = origReadFile
-		mockTargetSecretPath = ""
-	})
-
-	filesToTest := []string{
-		"sftpgo_oidc_config_url",
-		"sftpgo_oidc_client_id",
-		"sftpgo_oidc_client_secret",
-		"sftpgo_oidc_redirect_url",
-	}
-
-	for _, fname := range filesToTest {
-		mockTargetSecretPath = filepath.Join(tempDir, fname)
-		if _, err := PrepareEnvironment(nil, tempDir); err == nil {
-			t.Fatalf("expected error reading %s, got nil", fname)
-		}
+		t.Fatal("expected error for unmappable secret name, got nil")
 	}
 }
 

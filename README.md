@@ -11,13 +11,13 @@ Hardened, containerized deployment architecture for [SFTPGo](https://github.com/
 
 ## Architecture Highlights
 
-While upstream SFTPGo provides minimal container images, running them securely without configuration files, exposed database ports, or external tooling requires additional orchestration. This project re-packages upstream SFTPGo into a hardened deployment:
+This deployment packages SFTPGo into an isolated, hardened runtime environment:
 
-* Custom scratch assembly: We extract the upstream binary and web assets but assemble our own scratch image with two static Go helpers: `init` as PID 1 to mediate Docker secrets into memory, and `probe` to provide container healthchecks without needing a shell or `curl`.
-* Zero configuration files: Upstream relies on an `sftpgo.json` file on disk or plaintext environment variables. Here, all configuration and secrets are injected directly into process memory at startup.
-* Socket-only database: Unlike standard setups that expose database ports across a Docker bridge network, PostgreSQL runs with container networking disabled entirely, communicating exclusively over an isolated in-memory UNIX socket.
-* Isolated administration: WebAdmin and WebClient are split across separate listeners. The public reverse proxy reaches only the user WebClient, while the admin console is bound strictly to localhost for SSH tunnel or VPN access.
-* Hardened execution: Containers run under an arbitrary unprivileged host user with read-only root filesystems, dropped Linux capabilities, and disabled privilege escalation.
+* Scratch container assembly: Built on a `scratch` base using the official SFTPGo binary, paired with two static Go helpers: `init` as PID 1 (maps secret files prefixed with `sftpgo_` directly into process memory as `SFTPGO_*` environment variables) and `probe` for HTTP healthchecks without external shells or dependencies.
+* In-memory configuration: Service parameters and credentials are supplied to process memory via Docker secrets and environment variables, eliminating static configuration files on disk.
+* Socket-only database: PostgreSQL runs with container networking disabled, communicating exclusively over an in-memory UNIX domain socket to prevent network-based lateral movement and eliminate TCP overhead.
+* Interface separation: The user WebClient and administrative WebAdmin run on separate HTTP listeners. Only WebClient is routed through the reverse proxy; WebAdmin binds to localhost for access via SSH tunnel or WireGuard.
+* Privilege separation: Containers run under a non-root UID/GID with read-only root filesystems, all Linux capabilities dropped, and privilege escalation disabled.
 
 ---
 
@@ -27,23 +27,27 @@ While upstream SFTPGo provides minimal container images, running them securely w
 Production directory layout on the host (`/home/sftpgo`):
 
 ```text
-├── docker-compose.yaml                # Production deployment manifest
-├── .env                               # Host infrastructure variables (APP_UID, APP_GID, ports, versions)
-├── secrets/                           # Docker secrets directory
-│   ├── db_name.txt                    # PostgreSQL database name
-│   ├── db_user.txt                    # PostgreSQL username
-│   ├── db_password.txt                # PostgreSQL password
-│   ├── sftpgo_admin_user.txt          # Optional: Initial admin username (bootstrap only)
-│   ├── sftpgo_admin_password.txt      # Optional: Initial admin password (bootstrap only)
-│   ├── sftpgo_kms_master_key.txt      # Optional: At-rest encryption master key
-│   ├── sftpgo_oidc_config_url.txt     # Optional: OpenID Connect discovery URL
-│   ├── sftpgo_oidc_client_id.txt      # Optional: OpenID Connect client ID
-│   ├── sftpgo_oidc_client_secret.txt  # Optional: OpenID Connect client secret
-│   ├── sftpgo_oidc_redirect_url.txt   # Optional: OpenID Connect redirect base URL
-│   └── ssh_host_ed25519_key           # Optional: Ed25519 SSH host private key
-├── postgres/                          # Persistent PostgreSQL storage
-├── data/                              # User data directories
-└── logs/                              # Application logs
+├── docker-compose.yaml                                        # Production deployment manifest
+├── .env                                                       # Host infrastructure variables
+├── secrets/                                                   # Docker secrets directory
+│   ├── db_name.txt                                            # PostgreSQL database name
+│   ├── db_user.txt                                            # PostgreSQL username
+│   ├── db_password.txt                                        # PostgreSQL password
+│   ├── sftpgo_default_admin_username.txt                      # Optional: Initial admin username (bootstrap only)
+│   ├── sftpgo_default_admin_password.txt                      # Optional: Initial admin password (bootstrap only)
+│   ├── sftpgo_kms__secrets__master_key.txt                    # Optional: At-rest encryption master key
+│   ├── sftpgo_smtp__host.txt                                  # Optional: SMTP server host
+│   ├── sftpgo_smtp__from.txt                                  # Optional: SMTP sender address
+│   ├── sftpgo_smtp__user.txt                                  # Optional: SMTP login
+│   ├── sftpgo_smtp__password.txt                              # Optional: SMTP password
+│   ├── sftpgo_httpd__bindings__0__oidc__config_url.txt        # Optional: OpenID Connect discovery URL
+│   ├── sftpgo_httpd__bindings__0__oidc__client_id.txt         # Optional: OpenID Connect client ID
+│   ├── sftpgo_httpd__bindings__0__oidc__client_secret.txt     # Optional: OpenID Connect client secret
+│   ├── sftpgo_httpd__bindings__0__oidc__redirect_base_url.txt # Optional: OpenID Connect redirect base URL
+│   └── ssh_host_ed25519_key                                   # Optional: Ed25519 SSH host private key
+├── postgres/                                                  # Persistent PostgreSQL storage
+├── data/                                                      # User data directories
+└── logs/                                                      # Application logs
 ```
 
 </details>
@@ -99,14 +103,40 @@ sudo mkdir -p /home/sftpgo/{data,logs,postgres,secrets}
 sudo chown root:sftpgo /home/sftpgo/secrets
 sudo chmod 0750 /home/sftpgo/secrets
 
-sudo chown sftpgo:sftpgo /home/sftpgo/logs
-sudo chmod 0755 /home/sftpgo/logs
-
-sudo chown sftpgo:sftpgo /home/sftpgo/{data,postgres}
-sudo chmod 0700 /home/sftpgo/{data,postgres}
+sudo chown sftpgo:sftpgo /home/sftpgo/{data,logs,postgres}
+sudo chmod 0700 /home/sftpgo/{data,logs,postgres}
 ```
 
-### 3. Generate Secrets
+### 3. Deploy Project Files
+
+Download the production manifests directly into `/home/sftpgo`:
+
+```bash
+REPO="https://raw.githubusercontent.com/underhax/sftpgo-docker/main"
+
+sudo curl -fsSL ${REPO}/docker-compose.yaml -o /home/sftpgo/docker-compose.yaml
+sudo curl -fsSL ${REPO}/.env.example -o /home/sftpgo/.env
+
+sudo chown root:root /home/sftpgo/{docker-compose.yaml,.env}
+sudo chmod 0600 /home/sftpgo/{docker-compose.yaml,.env}
+```
+
+### 4. Configure Host Environment Settings
+
+Edit `/home/sftpgo/.env` using a text editor:
+
+```bash
+sudo nano /home/sftpgo/.env
+```
+
+Set the host parameters:
+* `APP_UID` and `APP_GID`: Matching the numeric UID/GID of your dedicated host `sftpgo` account.
+* `HOST_BIND_IP`: Host interface to bind. Defaults to `127.0.0.1` (loopback only) for private access via SSH tunnel. For WireGuard VPN, set this to the host's WireGuard interface IP (e.g. `10.8.0.1`).
+* `HOST_PORT`: Unique unreserved host port (default `54480`, mapped to container internal port `8081`) for isolated WebAdmin access.
+
+### 5. Generate Secrets
+
+> **Note:** Secret files mounted in `/run/secrets/` starting with `sftpgo_` are automatically converted to uppercase `SFTPGO_*` environment variables in process memory. Nested parameters use double underscores (for example, `sftpgo_smtp__password` maps to `SFTPGO_SMTP__PASSWORD`). This allows passing sensitive configuration without storing credentials in plaintext files.
 
 Install credential generation tools:
 
@@ -130,29 +160,50 @@ pwgen -s 64 1 | tr -d '\n' | sudo tee /home/sftpgo/secrets/db_password.txt > /de
 
 **Optional: Initial administrator credentials (bootstrap only):**
 
-> **Note:** `sftpgo_admin_user.txt` and `sftpgo_admin_password.txt` are optional and utilized **strictly during the initial database bootstrap**. Once the administrator account is created in PostgreSQL, changing or deleting these secret files will have no effect on existing credentials. The administrator account can also be initialized interactively over the secure localhost WebAdmin binding (`http://127.0.0.1:54480/web/admin`) via an SSH tunnel or WireGuard.
+> **Note:** `sftpgo_default_admin_username.txt` and `sftpgo_default_admin_password.txt` are optional and utilized **strictly during the initial database bootstrap**. Once the administrator account is created in PostgreSQL, changing or deleting these secret files will have no effect on existing credentials. The administrator account can also be initialized interactively over the secure localhost WebAdmin binding (`http://127.0.0.1:54480/portal/web/admin`) via an SSH tunnel or WireGuard.
 >
-> To use these secrets, uncomment `sftpgo_admin_user` and `sftpgo_admin_password` in `docker-compose.yaml` (both under `services.sftpgo.secrets` and the top-level `secrets:` block).
+> To use these secrets, uncomment `sftpgo_default_admin_username` and `sftpgo_default_admin_password` in `docker-compose.yaml` (both under `services.sftpgo.secrets` and the top-level `secrets:` block).
 
 ```bash
-sudo touch /home/sftpgo/secrets/sftpgo_admin_{user,password}.txt
-sudo chown root:sftpgo /home/sftpgo/secrets/sftpgo_admin_*.txt
-sudo chmod 0440 /home/sftpgo/secrets/sftpgo_admin_*.txt
+sudo touch /home/sftpgo/secrets/sftpgo_default_admin_{username,password}.txt
+sudo chown root:sftpgo /home/sftpgo/secrets/sftpgo_default_admin_*.txt
+sudo chmod 0440 /home/sftpgo/secrets/sftpgo_default_admin_*.txt
 
-printf "admin_%s" "$(pwgen -s -A 6 1)" | sudo tee /home/sftpgo/secrets/sftpgo_admin_user.txt > /dev/null
-pwgen -s 64 1 | tr -d '\n' | sudo tee /home/sftpgo/secrets/sftpgo_admin_password.txt > /dev/null
+printf "admin_%s" "$(pwgen -s -A 6 1)" | sudo tee /home/sftpgo/secrets/sftpgo_default_admin_username.txt > /dev/null
+pwgen -s 64 1 | tr -d '\n' | sudo tee /home/sftpgo/secrets/sftpgo_default_admin_password.txt > /dev/null
+
+sudo nano /home/sftpgo/docker-compose.yaml
 ```
 
 **Optional: KMS encryption master key:**
 
-> **Note:** To enable KMS encryption, uncomment `sftpgo_kms_master_key` in `docker-compose.yaml` (both under `services.sftpgo.secrets` and the top-level `secrets:` block).
+> **Note:** To enable KMS encryption, uncomment `sftpgo_kms__secrets__master_key` in `docker-compose.yaml` (both under `services.sftpgo.secrets` and the top-level `secrets:` block).
 
 ```bash
-sudo touch /home/sftpgo/secrets/sftpgo_kms_master_key.txt
-sudo chown root:sftpgo /home/sftpgo/secrets/sftpgo_kms_master_key.txt
-sudo chmod 0440 /home/sftpgo/secrets/sftpgo_kms_master_key.txt
+sudo touch /home/sftpgo/secrets/sftpgo_kms__secrets__master_key.txt
+sudo chown root:sftpgo /home/sftpgo/secrets/sftpgo_kms__secrets__master_key.txt
+sudo chmod 0440 /home/sftpgo/secrets/sftpgo_kms__secrets__master_key.txt
 
-pwgen -s 64 1 | tr -d '\n' | sudo tee /home/sftpgo/secrets/sftpgo_kms_master_key.txt > /dev/null
+pwgen -s 64 1 | tr -d '\n' | sudo tee /home/sftpgo/secrets/sftpgo_kms__secrets__master_key.txt > /dev/null
+
+sudo nano /home/sftpgo/docker-compose.yaml
+```
+
+**Optional: SMTP configuration (notifications & password resets):**
+
+> **Note:** To enable SMTP delivery, uncomment `sftpgo_smtp__host`, `sftpgo_smtp__from`, `sftpgo_smtp__user`, and `sftpgo_smtp__password` in `docker-compose.yaml` (under both `services.sftpgo.secrets` and the root `secrets:` block). Populate the secret values using a text editor, and configure transport settings (`SFTPGO_SMTP__PORT`, `SFTPGO_SMTP__AUTH_TYPE`, `SFTPGO_SMTP__ENCRYPTION`) in `/home/sftpgo/.env`.
+
+```bash
+sudo touch /home/sftpgo/secrets/sftpgo_smtp__{host,from,user,password}.txt
+sudo chown root:sftpgo /home/sftpgo/secrets/sftpgo_smtp__*.txt
+sudo chmod 0440 /home/sftpgo/secrets/sftpgo_smtp__*.txt
+
+sudo nano /home/sftpgo/secrets/sftpgo_smtp__host.txt
+sudo nano /home/sftpgo/secrets/sftpgo_smtp__from.txt
+sudo nano /home/sftpgo/secrets/sftpgo_smtp__user.txt
+sudo nano /home/sftpgo/secrets/sftpgo_smtp__password.txt
+sudo nano /home/sftpgo/docker-compose.yaml
+sudo nano /home/sftpgo/.env
 ```
 
 **Optional: SSH host private key (for SFTP service):**
@@ -166,6 +217,9 @@ pwgen -s 64 1 | tr -d '\n' | sudo tee /home/sftpgo/secrets/sftpgo_kms_master_key
 sudo ssh-keygen -t ed25519 -N "" -f /home/sftpgo/secrets/ssh_host_ed25519_key < /dev/null
 sudo chown root:sftpgo /home/sftpgo/secrets/ssh_host_ed25519_key*
 sudo chmod 0440 /home/sftpgo/secrets/ssh_host_ed25519_key*
+
+sudo nano /home/sftpgo/docker-compose.yaml
+sudo nano /home/sftpgo/.env
 ```
 
 **Lock secret files:**
@@ -175,33 +229,6 @@ sudo chown -R root:sftpgo /home/sftpgo/secrets
 sudo chmod 0750 /home/sftpgo/secrets
 sudo chmod 0440 /home/sftpgo/secrets/*
 ```
-
-### 4. Deploy Project Files
-
-Download the production manifests directly into `/home/sftpgo`:
-
-```bash
-REPO="https://raw.githubusercontent.com/underhax/sftpgo-docker/main"
-
-sudo curl -fsSL ${REPO}/docker-compose.yaml -o /home/sftpgo/docker-compose.yaml
-sudo curl -fsSL ${REPO}/.env.example -o /home/sftpgo/.env
-
-sudo chown root:root /home/sftpgo/{docker-compose.yaml,.env}
-sudo chmod 0600 /home/sftpgo/{docker-compose.yaml,.env}
-```
-
-### 5. Configure Host Environment Settings
-
-Edit `/home/sftpgo/.env` using a text editor:
-
-```bash
-sudo nano /home/sftpgo/.env
-```
-
-Set the host parameters:
-* `APP_UID` and `APP_GID`: Matching the numeric UID/GID of your dedicated host `sftpgo` account.
-* `HOST_BIND_IP`: Host interface to bind. Defaults to `127.0.0.1` (loopback only) for private access via SSH tunnel. For WireGuard VPN, set this to the host's WireGuard interface IP (e.g. `10.8.0.1`).
-* `HOST_PORT`: Unique unreserved host port (default `54480`, mapped to container internal port `8081`) for isolated WebAdmin access.
 
 ### 6. Start the Stack
 
@@ -221,10 +248,103 @@ The WebAdmin interface is bound strictly to `HOST_BIND_IP:HOST_PORT` (`127.0.0.1
   ```bash
   ssh -i ~/.ssh/id_ed25519 -p 22 -N -L 54480:127.0.0.1:54480 user@your-server-ip
   ```
-  Then open `http://localhost:54480/web/admin` in your local browser to log in (or complete the initial administrator setup) and configure Two-Factor Authentication (2FA/TOTP).
+  Then open `http://127.0.0.1:54480/portal/web/admin` in your local browser to log in (or complete the initial administrator setup) and configure Two-Factor Authentication (2FA/TOTP).
 
 * **Access via WireGuard VPN:**
-  In `/home/sftpgo/.env`, set `HOST_BIND_IP` to your host's WireGuard interface address (e.g. `HOST_BIND_IP='10.8.0.1'`). Authorized VPN clients can then navigate directly to `http://10.8.0.1:54480/web/admin`.
+  In `/home/sftpgo/.env`, set `HOST_BIND_IP` to your host's WireGuard interface address (e.g. `HOST_BIND_IP='10.8.0.1'`). Authorized VPN clients can then navigate directly to `http://10.8.0.1:54480/portal/web/admin`.
+
+</details>
+
+---
+
+<details>
+<summary><strong>External Angie (Perimeter Reverse Proxy)</strong></summary>
+
+### Edge Reverse Proxy Configuration
+
+The `sftpgo` container connects to the perimeter reverse proxy over the external `frontend_gateway` network (`172.20.0.0/16`) without publishing public HTTP or WebDAV ports on the host. An external Angie instance terminates TLS, handles automated Let's Encrypt certificates, manages HTTP/3 (QUIC), and streams large file transfers without disk buffering.
+
+A production-hardened virtual host template [`sftpgo.conf`](https://github.com/webstudiobond/angie-docker-compose/blob/main/data/conf.d/domains/sftpgo.conf) is maintained in the **[angie-docker-compose](https://github.com/webstudiobond/angie-docker-compose)** repository. It provides subpath routing for WebClient (`/portal/`), WebDAV (`/dav/`), root perimeter lockdown (`return 404;`), and an optional commented WebAdmin block with geo-IP allowlisting.
+
+Download the template into your Edge Angie domains directory:
+
+```bash
+DATA_ANGIE="/home/angie/data"
+curl -fsSL "https://raw.githubusercontent.com/webstudiobond/angie-docker-compose/main/data/conf.d/domains/sftpgo.conf" \
+  -o "${DATA_ANGIE}/conf.d/domains/sftpgo.conf"
+```
+
+### Parameter Synchronization Between Angie and SFTPGo
+
+To ensure clean routing and prevent 404 errors, parameters in `/home/sftpgo/.env` must match the locations configured in `sftpgo.conf`.
+
+#### 1. Web Interface Subpath (WebClient & WebAdmin)
+
+In `/home/sftpgo/.env`, configure `SFTPGO_HTTPD__WEB_ROOT='/portal'`. In `sftpgo.conf`, this matches `location ^~ /portal/ { proxy_pass http://sftpgo_webclient; ... }`.
+
+In production, you can replace `/portal/` with any unpredictable custom path in both files. In SFTPGo, `web_root` is an `httpd`-level setting that applies to both WebClient and WebAdmin. The root endpoint (`/`) returns 404 in Angie to prevent automated scanner discovery and enumeration.
+
+#### 2. WebDAV Subpath
+
+In `/home/sftpgo/.env`, configure `SFTPGO_WEBDAVD__BINDINGS__0__PREFIX='/dav'`. In `sftpgo.conf`, this matches `location ^~ /dav/ { proxy_pass http://sftpgo_webdav; ... }`.
+
+In production, you can replace `/dav/` with any unpredictable custom path in both files.
+
+#### 3. Reverse Proxy Real IP Trust
+
+Reverse proxy trust and `X-Forwarded-For` client IP header extraction are pre-configured in `.env` for Angie's gateway (`172.20.0.254,172.20.0.1,127.0.0.1`) across both WebClient and WebDAV listeners, ensuring real client IPs are recorded in access logs and processed by Defender out of the box.
+
+#### 4. Optional: Public WebAdmin Access
+
+By default, WebAdmin is isolated on container port `8081` (`127.0.0.1:54480`) and accessed strictly via SSH tunnel or WireGuard.
+
+To expose WebAdmin through the perimeter reverse proxy:
+1. In `sftpgo.conf`, uncomment the `sftpgo_webadmin` upstream (`server sftpgo-app:8081 resolve;`).
+2. Add your trusted IP addresses to the `geo $remote_addr $sftpgo_admin_allowed` block in `sftpgo.conf`.
+3. Uncomment the `location ^~ /portal/web/admin` block in `sftpgo.conf`. All unauthorized IP addresses receive 404.
+
+</details>
+
+---
+
+<details>
+<summary><strong>Permissions &amp; Ownership</strong></summary>
+
+## Host Permissions & Privilege Separation
+
+The stack enforces strict host-level privilege separation across three ownership tiers so that even in the event of a container compromise (`sftpgo`), the process cannot modify deployment manifests, service configurations, or secret files:
+
+* **`root:root` (Host-Only Manifests & Compose):**
+  * `docker-compose.yaml`, `.env` — `0600`
+* **`root:sftpgo` (Read-Only Service Configs, Secrets & Host Keys):**
+  * `/home/sftpgo/` base directory — `0750`
+  * `secrets/` — directory `0750`, secret files (`*.txt`, SSH host keys) `0440` (containers have group read-only access and cannot `chmod` or overwrite files)
+* **`sftpgo:sftpgo` (Runtime Writable Storage):**
+  * `data/` — `0700` (user data storage, managed with `umask 077`: directories `0700`, files `0600`)
+  * `postgres/` — `0700` (PostgreSQL database cluster data)
+  * `logs/` — `0700` (application log directory, log files `0600`)
+
+### One-Shot Permission Reset (Running Stack)
+
+Use this self-contained block to apply or restore canonical ownership and permissions on an existing or migrated installation without stopping the stack:
+
+```bash
+sudo chown root:sftpgo /home/sftpgo
+sudo chmod 0750 /home/sftpgo
+
+sudo chown root:root /home/sftpgo/docker-compose.yaml /home/sftpgo/.env
+sudo chmod 0600 /home/sftpgo/docker-compose.yaml /home/sftpgo/.env
+
+sudo chown -R root:sftpgo /home/sftpgo/secrets
+sudo chmod 0750 /home/sftpgo/secrets
+[ -d /home/sftpgo/secrets ] && sudo find /home/sftpgo/secrets -type f -exec chmod 0440 {} +
+
+sudo chown -R sftpgo:sftpgo /home/sftpgo/{data,postgres,logs}
+sudo chmod 0700 /home/sftpgo/{data,postgres,logs}
+[ -d /home/sftpgo/data ] && sudo find /home/sftpgo/data -mindepth 1 -type d -exec chmod 0700 {} +
+[ -d /home/sftpgo/data ] && sudo find /home/sftpgo/data -type f -exec chmod 0600 {} +
+[ -d /home/sftpgo/logs ] && sudo find /home/sftpgo/logs -type f -exec chmod 0600 {} +
+```
 
 </details>
 

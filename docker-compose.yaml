@@ -89,13 +89,17 @@ services:
       - db_name
       - db_user
       - db_password
-      # - sftpgo_admin_user
-      # - sftpgo_admin_password
-      # - sftpgo_kms_master_key
-      # - sftpgo_oidc_config_url
-      # - sftpgo_oidc_client_id
-      # - sftpgo_oidc_client_secret
-      # - sftpgo_oidc_redirect_url
+      # - sftpgo_default_admin_username
+      # - sftpgo_default_admin_password
+      # - sftpgo_kms__secrets__master_key
+      # - sftpgo_smtp__host
+      # - sftpgo_smtp__from
+      # - sftpgo_smtp__user
+      # - sftpgo_smtp__password
+      # - sftpgo_httpd__bindings__0__oidc__config_url
+      # - sftpgo_httpd__bindings__0__oidc__client_id
+      # - sftpgo_httpd__bindings__0__oidc__client_secret
+      # - sftpgo_httpd__bindings__0__oidc__redirect_base_url
       # - ssh_host_ed25519_key
     depends_on:
       postgres:
@@ -130,20 +134,28 @@ secrets:
     file: ./secrets/db_user.txt
   db_password:
     file: ./secrets/db_password.txt
-  # sftpgo_admin_user:
-  #   file: ./secrets/sftpgo_admin_user.txt
-  # sftpgo_admin_password:
-  #   file: ./secrets/sftpgo_admin_password.txt
-  # sftpgo_kms_master_key:
-  #   file: ./secrets/sftpgo_kms_master_key.txt
-  # sftpgo_oidc_config_url:
-  #   file: ./secrets/sftpgo_oidc_config_url.txt
-  # sftpgo_oidc_client_id:
-  #   file: ./secrets/sftpgo_oidc_client_id.txt
-  # sftpgo_oidc_client_secret:
-  #   file: ./secrets/sftpgo_oidc_client_secret.txt
-  # sftpgo_oidc_redirect_url:
-  #   file: ./secrets/sftpgo_oidc_redirect_url.txt
+  # sftpgo_default_admin_username:
+  #   file: ./secrets/sftpgo_default_admin_username.txt
+  # sftpgo_default_admin_password:
+  #   file: ./secrets/sftpgo_default_admin_password.txt
+  # sftpgo_kms__secrets__master_key:
+  #   file: ./secrets/sftpgo_kms__secrets__master_key.txt
+  # sftpgo_smtp__host:
+  #   file: ./secrets/sftpgo_smtp__host.txt
+  # sftpgo_smtp__from:
+  #   file: ./secrets/sftpgo_smtp__from.txt
+  # sftpgo_smtp__user:
+  #   file: ./secrets/sftpgo_smtp__user.txt
+  # sftpgo_smtp__password:
+  #   file: ./secrets/sftpgo_smtp__password.txt
+  # sftpgo_httpd__bindings__0__oidc__config_url:
+  #   file: ./secrets/sftpgo_httpd__bindings__0__oidc__config_url.txt
+  # sftpgo_httpd__bindings__0__oidc__client_id:
+  #   file: ./secrets/sftpgo_httpd__bindings__0__oidc__client_id.txt
+  # sftpgo_httpd__bindings__0__oidc__client_secret:
+  #   file: ./secrets/sftpgo_httpd__bindings__0__oidc__client_secret.txt
+  # sftpgo_httpd__bindings__0__oidc__redirect_base_url:
+  #   file: ./secrets/sftpgo_httpd__bindings__0__oidc__redirect_base_url.txt
   # ssh_host_ed25519_key:
   #   file: ./secrets/ssh_host_ed25519_key
 

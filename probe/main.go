@@ -1,5 +1,4 @@
-// Package main implements a zero-dependency healthcheck probe that validates
-// SFTPGo server availability against its internal HTTP telemetry liveness endpoint.
+// Package main implements a healthcheck probe querying the SFTPGo telemetry endpoint.
 package main
 
 import (
@@ -85,8 +84,7 @@ func defaultDoRequest(ctx context.Context, endpoint string) (err error) {
 
 var doRequest = defaultDoRequest
 
-// ResolveEndpoint determines the target healthcheck URL from the environment or default value
-// so that local telemetry endpoints can be redirected during testing or alternative deployments.
+// ResolveEndpoint returns the probe target URL from the environment or default.
 func ResolveEndpoint() string {
 	if val := strings.TrimSpace(os.Getenv(probeEnvVar)); val != "" {
 		return val
@@ -94,7 +92,7 @@ func ResolveEndpoint() string {
 	return defaultEndpoint
 }
 
-// CheckEndpoint queries the target endpoint using HTTP GET to verify service liveness.
+// CheckEndpoint queries the target endpoint and returns exit code 0 on success.
 func CheckEndpoint(ctx context.Context, endpoint string) int {
 	if err := doRequest(ctx, endpoint); err != nil {
 		return 1
