@@ -1,6 +1,6 @@
 FROM ghcr.io/drakkan/sftpgo:v2.7.6-distroless-slim@sha256:483f4ff2e6b6c659b7ec5b4beaa11506665fde1a4528cdeb6b4f4b624c0fff6e AS sftpgo-donor
 
-FROM golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS go-builder
+FROM golang:1.27.3-alpine3.24@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS go-builder
 
 WORKDIR /build
 
