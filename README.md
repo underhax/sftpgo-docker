@@ -1,7 +1,6 @@
 # Hardened Containerized SFTPGo
 
 [![CI](https://github.com/underhax/sftpgo-docker/actions/workflows/ci.yml/badge.svg)](https://github.com/underhax/sftpgo-docker/actions/workflows/ci.yml)
-[![Build](https://github.com/underhax/sftpgo-docker/actions/workflows/build.yml/badge.svg)](https://github.com/underhax/sftpgo-docker/actions/workflows/build.yml)
 [![GitHub last commit](https://img.shields.io/github/last-commit/underhax/sftpgo-docker)](https://github.com/underhax/sftpgo-docker/commits/main)
 [![GitHub issues](https://img.shields.io/github/issues/underhax/sftpgo-docker)](https://github.com/underhax/sftpgo-docker/issues)
 [![GitHub repo size](https://img.shields.io/github/repo-size/underhax/sftpgo-docker)](https://github.com/underhax/sftpgo-docker)
