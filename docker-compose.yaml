@@ -54,7 +54,7 @@ services:
         max-file: "3"
 
   sftpgo:
-    image: ghcr.io/underhax/sftpgo-docker:${SFTPGO_VERSION:-latest}
+    image: ghcr.io/underhax/sftpgo:${SFTPGO_VERSION:-latest}
     container_name: sftpgo-app
     hostname: sftpgo-app
     restart: always
